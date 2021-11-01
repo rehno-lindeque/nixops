@@ -18,6 +18,7 @@ import re
 import typeguard
 import inspect
 import shlex
+import typing
 from typing import (
     Callable,
     List,
@@ -33,6 +34,8 @@ from typing import (
     TypeVar,
     Generic,
     Iterable,
+    Sequence,
+    Type,
 )
 
 import nixops.util
@@ -132,7 +135,7 @@ class ImmutableValidatedObject:
         kw = {}
         for arg in args:
             if not isinstance(arg, ImmutableValidatedObject):
-                raise TypeError("Arg not a Immutablevalidatedobject instance")
+                raise TypeError("Arg not a ImmutableValidatedObject instance")
             kw.update(dict(arg))
         kw.update(kwargs)
 
@@ -143,28 +146,34 @@ class ImmutableValidatedObject:
                 continue
             anno.update(x.__annotations__)
 
-        def _transform_value(key: Any, value: Any) -> Any:
-            ann = anno.get(key)
-
-            # Untyped, pass through
+        def _transform_value(ann: Optional[Type], value: Any) -> Any:
             if not ann:
+                # Untyped, pass through
                 return value
 
-            if inspect.isclass(ann) and issubclass(ann, ImmutableValidatedObject):
+            # Support ImmutableValidatedObject
+            if (
+                isinstance(value, Mapping)
+                and inspect.isclass(ann)
+                and issubclass(ann, ImmutableValidatedObject)
+            ):
                 value = ann(**value)
 
-            # Support Sequence[ImmutableValidatedObject]
-            if isinstance(value, tuple) and not isinstance(ann, str):
-                new_value = []
-                for v in value:
-                    for subann in ann.__args__:
-                        if inspect.isclass(subann) and issubclass(
-                            subann, ImmutableValidatedObject
-                        ):
-                            new_value.append(subann(**v))
-                        else:
-                            new_value.append(v)
-                value = tuple(new_value)
+            type_args = tuple(set(typing.get_args(ann)) - {type(None)})
+            if (
+                typing.get_origin(ann) is not None
+                and len(type_args) == 1
+                and inspect.isclass(type_args[0])
+                and issubclass(type_args[0], ImmutableValidatedObject)
+            ):
+                # Support Sequence[ImmutableValidatedObject]
+                if isinstance(value, Sequence) and issubclass(tuple, typing.get_origin(ann)):
+                    value = tuple(_transform_value(type_args[0], v) for v in value)
+
+                # Support Optional[ImmutableValidatedObject]
+                if typing.get_origin(ann) is Union:
+                    if value is not None:
+                        value = _transform_value(type_args[0], value)
 
             typeguard.check_type(key, value, ann)
 
@@ -181,7 +190,7 @@ class ImmutableValidatedObject:
             # is set this attribute is set on self before __init__ is called
             default = getattr(self, key) if hasattr(self, key) else None
             value = kw.get(key, default)
-            setattr(self, key, _transform_value(key, value))
+            setattr(self, key, _transform_value(anno.get(key), value))
 
         self._frozen = True
 
