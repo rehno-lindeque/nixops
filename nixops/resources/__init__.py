@@ -202,41 +202,78 @@ class ResourceDefinition:
         #             # else:
         #             #     yield from collect_iterable_types(typing.get_args(t))
 
-        def collect_noniterables(val):
-            if isinstance(val, Iterable):
-                for v in val:
-                    yield from collect_references(v)
-            else:
-                yield val
+        # def collect_noniterables(val):
+        #     if isinstance(val, Iterable):
+        #         for v in val:
+        #             yield from collect_references(v)
+        #     else:
+        #         yield val
 
-        def collect_reference_types(types: Iterable[Type]) -> Iterable[Type[ResourceReferenceOption]]:
-            search_iterable(types, cond=lambda t: is_resource_reference_option_type(t) or typing.get_args(t) == ())
+        # def collect_leafy_types(t: Type) -> Iterable[Type[ResourceReferenceOption]]:
+        #     type_origin = typing.get_origin(t)
+        #     type_args = typing.get_args(t)
+        #     if len(type_args) == 0:
+        #         yield t
+        #         return
+
+        #     if type_origin is Union:
+        #         # Ignore Optional/Union types with None
+        #         leafy_type_args = tuple(arg for arg in type_args if arg is not type(None))
+        #     elif origin_is_class and issubclass(type_origin, Mapping):
+        #         # Ignore key type argument
+        #         leafy_type_args = type_args[1:]
+        #     else:
+        #         leafy_type_args = type_args
+
+
+        #     if len(leafy_type_args) == 1:
+        #         yield from collect_leafy_types(leafy_type_args[0])
+        #     else:
+        #         if inspect.isclass(type_origin) and issubclass(type_origin, Mapping):
+        #             # Ignore key type argument
+        #             for arg in type_args[1:]
+        #                 yield from collect_leafy_types(
+
+        # def collect_reference_option_types(t: Type) -> Iterable[Type[ResourceReferenceOption]]:
+        #     return (leafy_type for leafy_type in collect_leafy_types(t) if is_resource_reference_option_type(t))
+
 
         def collect_references(config) -> Iterable[Tuple[T, Set[Type]]]:
             """
             Collect all reference values along with type information about the reference types.
             """
+            def collect_reference_option_types(t: Type) -> Iterable[Type[ResourceReferenceOption]]:
+                if is_reference_option_type(t):
+                    yield t
+                else:
+                    for type_arg in typing.get_args(t):
+                        yield from collect_reference_option_types(type_arg)
             for resource_options in collect_resource_options(config):
                 for k, t in get_type_hints(resource_options, include_extras=True).items():
-                    # def is_leaf_type(t):
-                    #     return typing.get_args(t) == () or is_resource_reference_option_type(t)
-                    def is_leafy_type(t):
-                        if inspect.isclass(t):
-                            return not issubclass(t, Iterable):
-                        origin = typing.get_origin(t)
-                        if inspect.isclass(origin):
-                            return not issubclass(origin, Iterable))
-                        return True
-
-
                     val = config.get(k)
-                    leafy_types = set(search_iterable((t,), cond=is_leafy_type))
-                    if len(leafy_types) > 1:
-                        if any 
-                    # if len(leafy_types) > 1: ....
-                    # for leafy_type in leafy_types:
-                    # HERE...
-                    # reference_types = set(leaf_type for leaf_type in leaf_types if is_resource_reference_option_type(t))
+
+                    if val is None:
+                        continue
+
+                    if is_resource_reference_option_type(t):
+                        yield (val, t)
+                        continue
+
+                    # Handle Unions with ResourceReferenceOption
+                    type_origin = typing.get_origin(t)
+                    type_args = tuple(set(typing.get_args(t)) - {type(None)})
+                    if type_origin is Union and len(type_args) == 1 and is_resource_reference_option_type(type_args[0]):
+                        # Allow Optional[ResourceReferenceOption]
+                        yield (val, type_args[0])
+                    else:
+                        # Disallow complex datastructures containing references
+                        # TODO: Complex datastructures (arbitrary Union and Iterable types) could be supported if ReferenceOptionType can be serialized into a NewType in future.
+                        if any(True for _ in collect_reference_option_types(t)):
+                            raise Exception("Bug: ‘{0}.{1}’ is too complex for reference resolution.\nAvoid embedding ResourceReferenceOption in ‘{2}’.".format(type(resource_options).__name__, k, type_origin))
+
+
+                    # Error if references in incompatble positions
+
                     # if len(leaf_types) == 1 and len(reference_types) == 1:
                     #     yield from collect_noniterables(val)
                     # else:
