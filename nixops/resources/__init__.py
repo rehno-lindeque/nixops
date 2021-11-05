@@ -17,7 +17,7 @@ from typing import (
     Type,
     Iterable,
     Set,
-    Callable
+    Callable,
 )
 import typing
 from nixops.state import StateDict, RecordId
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 # but Annotated maintains backward compatibility for now
 T = TypeVar
 ResourceReferenceOption = Annotated[Union[T, str], "ResourceReferenceOption"]
+
 
 class ResourceEval(ImmutableMapping[Any, Any]):
     pass
@@ -140,7 +141,9 @@ class ResourceDefinition:
                         yield val
 
         def is_resource_reference_option_type(t: Type) -> bool:
-            return typing.get_origin(t) is Annotated and typing.get_args(t)[1:2] == ("ResourceReferenceOption",)
+            return typing.get_origin(t) is Annotated and typing.get_args(t)[1:2] == (
+                "ResourceReferenceOption",
+            )
 
             # for t in types:
             #     if is_resource_reference_option_type(t):
@@ -225,7 +228,6 @@ class ResourceDefinition:
         #     else:
         #         leafy_type_args = type_args
 
-
         #     if len(leafy_type_args) == 1:
         #         yield from collect_leafy_types(leafy_type_args[0])
         #     else:
@@ -237,19 +239,24 @@ class ResourceDefinition:
         # def collect_reference_option_types(t: Type) -> Iterable[Type[ResourceReferenceOption]]:
         #     return (leafy_type for leafy_type in collect_leafy_types(t) if is_resource_reference_option_type(t))
 
-
         def collect_references(config) -> Iterable[Tuple[T, Set[Type]]]:
             """
             Collect all reference values along with type information about the reference types.
             """
-            def collect_reference_option_types(t: Type) -> Iterable[Type[ResourceReferenceOption]]:
+
+            def collect_reference_option_types(
+                t: Type,
+            ) -> Iterable[Type[ResourceReferenceOption]]:
                 if is_reference_option_type(t):
                     yield t
                 else:
                     for type_arg in typing.get_args(t):
                         yield from collect_reference_option_types(type_arg)
+
             for resource_options in collect_resource_options(config):
-                for k, t in get_type_hints(resource_options, include_extras=True).items():
+                for k, t in get_type_hints(
+                    resource_options, include_extras=True
+                ).items():
                     val = config.get(k)
 
                     if val is None:
@@ -262,15 +269,22 @@ class ResourceDefinition:
                     # Handle Unions with ResourceReferenceOption
                     type_origin = typing.get_origin(t)
                     type_args = tuple(set(typing.get_args(t)) - {type(None)})
-                    if type_origin is Union and len(type_args) == 1 and is_resource_reference_option_type(type_args[0]):
+                    if (
+                        type_origin is Union
+                        and len(type_args) == 1
+                        and is_resource_reference_option_type(type_args[0])
+                    ):
                         # Allow Optional[ResourceReferenceOption]
                         yield (val, type_args[0])
                     else:
                         # Disallow complex datastructures containing references
                         # TODO: Complex datastructures (arbitrary Union and Iterable types) could be supported if ReferenceOptionType can be serialized into a NewType in future.
                         if any(True for _ in collect_reference_option_types(t)):
-                            raise Exception("Bug: ‘{0}.{1}’ is too complex for reference resolution.\nAvoid embedding ResourceReferenceOption in ‘{2}’.".format(type(resource_options).__name__, k, type_origin))
-
+                            raise Exception(
+                                "Bug: ‘{0}.{1}’ is too complex for reference resolution.\nAvoid embedding ResourceReferenceOption in ‘{2}’.".format(
+                                    type(resource_options).__name__, k, type_origin
+                                )
+                            )
 
                     # Error if references in incompatble positions
 
@@ -280,9 +294,8 @@ class ResourceDefinition:
                     #     ...
 
                     # if isinstance(val, Iterable) and len(leaf_types) == 1:
-                    #     if 
+                    #     if
                     #     for collect_references()
-
 
                     # if len(leaf_types) > 1:
 
@@ -343,7 +356,6 @@ class ResourceDefinition:
             #                 else config_type,
             #             )
             #         yield from collect_refe
-
 
             # for k, t in get_type_hints(config_type, include_extras=True).items():
             #     for c in unpack_type_roots(t):
