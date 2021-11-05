@@ -13,10 +13,13 @@ from typing import (
     TypeVar,
     Union,
     TYPE_CHECKING,
+    ResourceReferenceOption,
     Type,
     Iterable,
     Set,
+    Callable
 )
+import typing
 from nixops.state import StateDict, RecordId
 from nixops.diff import Diff, Handler
 from nixops.util import ImmutableMapping, ImmutableValidatedObject
@@ -26,6 +29,10 @@ from typing_extensions import Literal
 if TYPE_CHECKING:
     import nixops.deployment
 
+# ResourceOptionReference could be implemented as NewType["ResourceOptionReference", T],
+# but Annotated maintains backward compatibility for now
+T = TypeVar
+ResourceReferenceOption = Annotated[Union[T, str], "ResourceReferenceOption"]
 
 class ResourceEval(ImmutableMapping[Any, Any]):
     pass
@@ -77,6 +84,245 @@ class ResourceDefinition:
 
         if not re.match("^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$", self.name):  # noqa: W605
             raise Exception("invalid resource name ‘{0}’".format(self.name))
+
+    # TODO: return type
+    def resolve_config(environment: dict):
+        pass
+
+    def get_config_references() -> Set[str]:
+        def unpack_type_roots(t: Type) -> Iterator[Any]:
+            """
+            Unpack type arguments recursively. This function will always yield at least one type argument.
+
+            tuple(unpack_type_roots(int)) == (int,)
+            tuple(unpack_type_roots(Optional[int])) == (int, type(None))
+            tuple(unpack_type_roots(Optional[Sequence[int]])) == (int, type(None))
+            tuple(unpack_type_roots(Annotated[Optional[int], "x"])) == (int, type(None), "x")
+            tuple(unpack_type_roots(Optional[Annotated[int, "x"]])) == (int, "x", type(None))
+            """
+            if typing.get_args(t) == ():
+                yield t
+            else:
+                for arg in typing.get_args(t):
+                    yield from unpack_type_roots(arg)
+
+        def search_iterable(val, cond: Callable[..., bool]):
+            """
+            Recursively filter an iterable to find elements that match a given condition.
+
+            tuple(
+                unpack_iterable(
+                    [(1, {"a": ("x", ExampleOptions())})],
+                    (lambda x: isinstance(x, ExampleOptions) or not isinstance(x, Iterable)
+                )
+            ) == (1, "x", ExampleOptions())
+            """
+            if cond(val):
+                yield val
+            elif isinstance(val, Iterable):
+                for val in val:
+                    yield from search_iterable(val, cond)
+
+        def collect_instances(values: Iterable, t: Type) -> Iterable:
+            for val in values:
+                if isinstance(val, t):
+                    yield val
+
+        def collect_resource_options(value) -> Iterable[ResourceOptions]:
+            """
+            Recurse iterables to find all ResourceOptions instances.
+            """
+            if isinstance(value, ResourceOptions):
+                yield value
+            if isinstance(value, Iterable):
+                for val in values:
+                    if isinstance(val, ResourceOptions):
+                        yield val
+
+        def is_resource_reference_option_type(t: Type) -> bool:
+            return typing.get_origin(t) is Annotated and typing.get_args(t)[1:2] == ("ResourceReferenceOption",)
+
+            # for t in types:
+            #     if is_resource_reference_option_type(t):
+            #         yield t
+            #     else:
+            #         type_args = typing.get_args(t)
+            #         if type_args == ():
+            #             yield t
+            #         else:
+            #             yield from collect_reference_types(type_args)
+
+        # def collect_iterable_types(types: Iterable[Type]) -> Iterable[Type[Iterable]]:
+        #     for t in types:
+        #         if inspect.isclass(t) and issubclass(t, Iterable):
+        #             yield t
+        #         else:
+        #             origin = typing.get_origin(t)
+        #             if inspect.isclass(origin) and issubclass(origin, Iterable):
+        #                 yield t
+        #             else:
+        #                 yield from collect_iterable_types(typing.get_args(t))
+
+        # def reconcile_type(val, t: Type) -> Optional[Type]:
+        #     """
+        #     Reconcile a type with a value (and return the reconciled type)
+        #     """
+        #     if inspect.isclass(t):
+        #         if isinstance(val, t):
+        #             return (val, t)
+        #     else:
+        #         origin = typing.get_origin(t)
+        #         if inspect.isclass(origin):
+        #             if isinstance(val, origin)
+        #                 return(val, t)
+        #         elif origin is Union:
+        #             for type_arg in typing.type_args(t):
+        #                 reconciled_type_arg = reconcile_type(val, t):
+        #                 if reconciled_type_arg is not None:
+        #                     return reconciled_type_arg
+        #             return None
+        #         else:
+        #             raise Exception("Unknown type origin ‘{0}’ in type ‘{1}’".format(origin, t))
+
+        # def collect_value_types(val, types: Iterable[Type]) -> Iterable[Tuple[Any, Type]]:
+        #     for t in types:
+        #         if inspect.isclass(t):
+        #             if isinstance(val, t):
+        #                 yield (val, t)
+        #                 return
+        #         else:
+        #             origin = typing.get_origin(t)
+        #             if inspect.isclass(origin):
+        #                 if isinstance(val, origin):
+        #                     r = collect_value_types(val, typing.get_args(t))
+
+        #             # if inspect.isclass(origin) and isinstance(val, origin) and issubclass(origin, Iterable):
+        #             #     for v in values:
+        #             #         yield from collect_value_types(v, typing.get_args(t))
+        #             # else:
+        #             #     yield from collect_iterable_types(typing.get_args(t))
+
+        def collect_noniterables(val):
+            if isinstance(val, Iterable):
+                for v in val:
+                    yield from collect_references(v)
+            else:
+                yield val
+
+        def collect_reference_types(types: Iterable[Type]) -> Iterable[Type[ResourceReferenceOption]]:
+            search_iterable(types, cond=lambda t: is_resource_reference_option_type(t) or typing.get_args(t) == ())
+
+        def collect_references(config) -> Iterable[Tuple[T, Set[Type]]]:
+            """
+            Collect all reference values along with type information about the reference types.
+            """
+            for resource_options in collect_resource_options(config):
+                for k, t in get_type_hints(resource_options, include_extras=True).items():
+                    # def is_leaf_type(t):
+                    #     return typing.get_args(t) == () or is_resource_reference_option_type(t)
+                    def is_leafy_type(t):
+                        if inspect.isclass(t):
+                            return not issubclass(t, Iterable):
+                        origin = typing.get_origin(t)
+                        if inspect.isclass(origin):
+                            return not issubclass(origin, Iterable))
+                        return True
+
+
+                    val = config.get(k)
+                    leafy_types = set(search_iterable((t,), cond=is_leafy_type))
+                    if len(leafy_types) > 1:
+                        if any 
+                    # if len(leafy_types) > 1: ....
+                    # for leafy_type in leafy_types:
+                    # HERE...
+                    # reference_types = set(leaf_type for leaf_type in leaf_types if is_resource_reference_option_type(t))
+                    # if len(leaf_types) == 1 and len(reference_types) == 1:
+                    #     yield from collect_noniterables(val)
+                    # else:
+                    #     ...
+
+                    # if isinstance(val, Iterable) and len(leaf_types) == 1:
+                    #     if 
+                    #     for collect_references()
+
+
+                    # if len(leaf_types) > 1:
+
+                    # if len(reference_type) == 0:
+                    #     continue
+                    # else:
+                    #     for val in collect_noniterables(self.config.get(k)):
+                    #         if val is not None:
+                    #             yield (val, reference_types)
+
+            # type_roots = set(unpack_type_roots(config_type))
+            # options_types = set(
+            #     t
+            #     for t in type_roots
+            #     if inspect.isclass(t) and issubclass(t, config_type)
+            # )
+
+            # if len(options_types) + len(reference_types) == 0:
+            #     return
+            # elif len(options_types) + len(reference_types) > 1:
+            #     raise Exception(
+            #         "Bug: ResourceOptions type is too complex for reference resolution.\nAvoid Unions with multiple ResourceOptions or ResourceReferences."
+            #     )
+
+            # if reference_types == {"ResourceReferenceOption"}:
+            #     for val in search_iterable(config_value, lambda x: isinstance(x, str)):
+            #         yield val
+            # else:
+            #     (options_type,) = tuple(options_types)
+
+            # if typing.get_origin(config_type) is not None:
+            #     # Collect references from fully typed Iterables containing (no more than one) ResourceOption
+            #     # (e.g. List[...], Tuple[...], Dict[...], Set[...])
+
+            #     if isinstance(config_value, Iterable) and len(type_roots) == 1:
+            #         (options_type,) = tuple(options_types)
+            #         for val in config_value:
+            #             yield from collect_references(
+            #                 config_value=val,
+            #                 config_type=options_type
+            #                 if isinstance(val, ResourceOptions)
+            #                 else config_type,
+            #             )
+            #     return
+
+            # # Collect references from dicts
+            # type_hints = get_type_hints(config_type, include_extras=True)
+            # if type_hints == {}:
+            #     return
+            #     if not isinstance(config_value, config_type):
+            #         raise Exception("Bug: config_value and config_type does not match")
+
+            #         for val in config_value:
+            #             yield from collect_references(
+            #                 config_value=val,
+            #                 config_type=options_type
+            #                 if isinstance(val, ResourceOptions)
+            #                 else config_type,
+            #             )
+            #         yield from collect_refe
+
+
+            # for k, t in get_type_hints(config_type, include_extras=True).items():
+            #     for c in unpack_type_roots(t):
+            #         if isinstance(c, ResourceOptions):
+            #             yield from collect_references(config["k"])
+            #             break
+            #         elif typing.get_origin(t) is Annnotated and typing.get_args(t)[1:2] == (
+            #             "ResourceOptionReference",
+            #         ):
+            #             ref = self.config.get("k")
+            #             if isinstance(ref, str) and ref.startswith("res-"):
+            #                 yield ref
+
+        print("!!!!!!!", set(collect_references(self.config)))
+
+        return set(collect_references(self.config))
 
     def show_type(self) -> str:
         """A short description of the type of resource this is"""

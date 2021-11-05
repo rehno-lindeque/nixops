@@ -2,7 +2,7 @@ import json
 import collections
 import sqlite3
 import nixops.util
-from typing import Any, List, Iterator, AbstractSet, Tuple, NewType
+from typing import Any, List, Iterator, AbstractSet, Tuple, NewType, Sequence
 
 RecordId = NewType("RecordId", str)
 
@@ -29,7 +29,8 @@ class StateDict(collections.MutableMapping):
                 )
             else:
                 v = value
-                if isinstance(value, list) or isinstance(value, dict):
+                print(type(v), v)
+                if isinstance(value, Sequence) or isinstance(value, dict):
                     v = json.dumps(value, cls=nixops.util.NixopsEncoder)
                 c.execute(
                     "insert or replace into ResourceAttrs(machine, name, value) values (?, ?, ?)",

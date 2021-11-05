@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-
+import json
 from typing import (
     Any,
     AnyStr,
@@ -16,6 +16,7 @@ from typing import (
 )
 from nixops.logger import MachineLogger
 from nixops.state import StateDict
+import nixops.util
 
 if TYPE_CHECKING:
     import nixops.deployment
@@ -112,19 +113,23 @@ class Diff(Generic[ResourceDefinitionType]):
         of the handlers to be called to realize the diff.
         """
         keys = list(set(self._state.keys()) | set(self._definition.keys()))
+        state_dict = {k: self._state.get(k) for k in keys}
+        state_dict = {k: self._state.get(k) for k in keys}
+
         for k in keys:
             self.eval_resource_attr_diff(k)
+
         for k in self.get_keys():
             definition = self.get_resource_definition(k)
             if show:
                 if self._diff[k] == self.SET:
                     self.logger.log(
-                        "will set attribute {0} to {1} (was {2})".format(k, definition, self._state.get(k))
+                        "will set attribute {0} to {1}".format(k, definition)
                     )
                 elif self._diff[k] == self.UPDATE:
                     self.logger.log(
-                        "{0} will be updated from {1} to {2} (was {2})".format(
-                            k, self._state[k], definition, self._state.get(k)
+                        "{0} will be updated from {1} to {2}".format(
+                            k, self._state[k], definition
                         )
                     )
                 else:
@@ -188,11 +193,14 @@ class Diff(Generic[ResourceDefinitionType]):
     def eval_resource_attr_diff(self, key: str) -> None:
         s = self._state.get(key, None)
         d = self.get_resource_definition(key)
+
         if s is None and d is not None:
             self._diff[key] = self.SET
         elif s is not None and d is None:
             self._diff[key] = self.UNSET
         elif s is not None and d is not None:
+            # d = json.dumps(d, cls=nixops.util.NixopsEncoder)
+            # s = json.dumps(s, cls=nixops.util.NixopsEncoder)
             if s != d:
                 self._diff[key] = self.UPDATE
 
@@ -221,5 +229,11 @@ class Diff(Generic[ResourceDefinitionType]):
                 item = retrieve_def(option)
                 options.append(item)
             return options
+        # if isinstance(d, dict):
+        #     options ={}
+        #     for option in d:
+        #         item = retrieve_def(option)
+        #         options.append(item)
+        #     return options
         d = retrieve_def(d)
         return d
