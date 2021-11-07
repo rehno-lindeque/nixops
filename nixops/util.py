@@ -120,6 +120,9 @@ class ImmutableMapping(Generic[K, V], Mapping[K, V]):
         return "<{} {}>".format(self.__class__.__name__, self._dict)
 
 
+T = TypeVar("T")
+
+
 class ImmutableValidatedObject:
     """
     An immutable object that validates input types
@@ -140,43 +143,48 @@ class ImmutableValidatedObject:
         kw.update(kwargs)
 
         # Support inheritance
-        anno: Dict = {}
+        anno: Dict[str, Type] = {}
         for x in reversed(self.__class__.mro()):
             if not hasattr(x, "__annotations__"):
                 continue
             anno.update(x.__annotations__)
 
-        def _transform_value(value: Any, target_type: Optional[Type]) -> Any:
+        def _transform_value(value: Any, target_type: Type[T]) -> T:
+            def is_immutable_validated_object_type(t: Type) -> bool:
+                return inspect.isclass(t) and issubclass(t, ImmutableValidatedObject)
+
+            t = typing.get_args(target_type)[0]  # type: ignore[attr-defined]
+
             # Untyped, pass through
-            if not target_type:
+            if t is Any:
                 return value
 
-            # Support ImmutableValidatedObject
-            if (
-                isinstance(value, Mapping)
-                and inspect.isclass(target_type)
-                and issubclass(target_type, ImmutableValidatedObject)
-            ):
-                value = target_type(**value)
+            targs = tuple(set(typing.get_args(t)) - {type(None)})  # type: ignore[attr-defined]
+            torigin = typing.get_origin(t)  # type: ignore[attr-defined]
 
-            type_origin = typing.get_origin(target_type)  # type: ignore[attr-defined]
-            type_args = tuple(set(typing.get_args(target_type)) - {type(None)})  # type: ignore[attr-defined]
-            if (
-                type_origin is not None
-                and len(type_args) == 1
-                and inspect.isclass(type_args[0])
-                and issubclass(type_args[0], ImmutableValidatedObject)
-            ):
-                # Support Sequence[ImmutableValidatedObject]
-                if isinstance(value, Sequence) and issubclass(tuple, type_origin):
-                    value = tuple(_transform_value(v, type_args[0]) for v in value)
+            # Support ImmutableValidatedObject, or any subclass (including subclasses that take type arguments).
+            if is_immutable_validated_object_type(torigin):
+                if isinstance(value, Mapping):
+                    value = t(**value)
+                else:
+                    value = t(value)
+            elif len(targs) == 1 and is_immutable_validated_object_type(targs[0]):
 
                 # Support Optional[ImmutableValidatedObject]
-                if type_origin is Union:
+                if torigin is Union:
                     if value is not None:
-                        value = _transform_value(value, type_args[0])
+                        value = _transform_value(value, targs[0])
 
-            typeguard.check_type(key, value, target_type)
+                # Support Sequence[ImmutableValidatedObject]
+                elif (
+                    isinstance(value, Sequence)
+                    and inspect.isclass(torigin)
+                    and issubclass(tuple, torigin)
+                ):
+                    value = tuple(_transform_value(v, targs[0]) for v in value)
+
+            # TODO: Is run-time type checking still required now that the type is statically resolved via Type[T] -> T
+            typeguard.check_type(key, value, t)
 
             return value
 
@@ -191,7 +199,7 @@ class ImmutableValidatedObject:
             # is set this attribute is set on self before __init__ is called
             default = getattr(self, key) if hasattr(self, key) else None
             value = kw.get(key, default)
-            setattr(self, key, _transform_value(value, anno.get(key)))
+            setattr(self, key, _transform_value(value, anno.get(key) or Type[Any]))
 
         self._frozen = True
 
