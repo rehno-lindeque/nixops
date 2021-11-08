@@ -30,11 +30,6 @@ from typing_extensions import Literal
 if TYPE_CHECKING:
     import nixops.deployment
 
-# ResourceOptionReference could be implemented as NewType["ResourceOptionReference", T],
-# but Annotated maintains backward compatibility for now
-T = TypeVar
-ResourceReferenceOption = Annotated[Union[T, str], "ResourceReferenceOption"]
-
 
 class ResourceEval(ImmutableMapping[Any, Any]):
     pass

@@ -121,6 +121,109 @@ class ImmutableMapping(Generic[K, V], Mapping[K, V]):
 
 
 T = TypeVar("T")
+SourceT = TypeVar("SourceT")
+DestT = TypeVar("DestT")
+
+
+def _assert_cast(value: Any, expected_type: Type[T]) -> T:
+    (t,) = typing.get_args(expected_type)
+    if isinstance(value, expected_type):
+        return value
+    raise Exception("Expected type: ‘{0}’. Got type: ‘{1}’", type(value))
+
+
+def mk_constructor(
+    source_type: Type[SourceT], dest_type: Type[DestT]
+) -> Optional[Callable[[SourceT], DestT]]:
+    """
+    Make a constructor that takes source type as input and produces destination type as output.
+
+    Returns None if the conversion is not possible.
+    """
+
+    (source_t,) = typing.get_args(source_type)
+    (dest_t,) = typing.get_args(dest_type)
+
+    # TODO: can this be enforced at the type level?
+    if not (typing.get_args(source_t) == () and typing.get_args(dest_t) == ()):
+        raise Exception("Bug: Subscripted generics cannot be used with mk_constructor")
+    if not inspect.isclass(source_t):
+        raise Exception("Bug: mk_constructor expects a class for the source type")
+    if isinstance(dest_t, typing._SpecialForm):
+        raise Exception("Bug: Special form types cannot be used with mk_constructor")
+
+    # Pass through source type if it subclasses the destination type
+    if issubclass(source_t, dest_t):
+        return lambda value: _assert_cast(value, source_t)
+
+    # Convert source type to destination type using the destination type's constructor
+    if inspect.isclass(dest_t):
+        if issubclass(dest_t, ImmutableValidatedObject):
+            # Assume ImmutableValidatedObject subclass takes named arguments if the value is a Mapping
+            if issubclass(source_t, Mapping):
+                return lambda value: dest_t(**_assert_cast(value, Mapping))
+
+            # Assume ImmutableValidatedObject has a compatible single argument constructor
+            return lambda value: dest_t(_assert_cast(value, source_t))
+
+        # Assume source and destination have compatible constructors if they share the Mapping base class
+        if issubclass(source_t, Mapping) and issubclass(dest_t, Mapping):
+            return lambda value: dest_t(_assert_cast(value, Mapping))
+
+        # Assume source and destination have compatible constructors if they share the Sequence base class
+        if issubclass(source_t, Sequence) and issubclass(dest_t, Sequence):
+            return lambda value: dest_t(_assert_cast(value, source_t))
+
+    # Source and destination types are not compatible
+    return None
+
+
+MkConstructor = Callable[
+    [Type[SourceT], Type[DestT]],
+    Optional[Callable[[SourceT], DestT]],
+]
+
+def construct(
+    value: Any,
+    dest_type: Type[DestT],
+    mk_constructor: MkConstructor[SourceT, DestT] = mk_constructor,
+) -> DestT:
+    source_t = type(value)
+    (dest_t,) = typing.get_args(dest_type)
+
+    def _dispatch_union(union_type_args):
+        constructors = tuple(
+            c
+            for c in (
+                mk_constructor(source_t, typing.get_origin(t) or t)
+                for t in union_type_args
+            )
+            if c is not None
+        )
+        if len(constructors) > 1:
+            raise Exception(
+                "Bug: Multiple known conversions between source type ‘{0}’ and destination type ‘{1}’".format(
+                    source_t, dest_t
+                )
+            )
+        return constructors[0] if len(constructors) == 1 else None
+
+    dest_origin = typing.get_origin(dest_t) or dest_t
+    constructor = (
+        _dispatch_union(typing.get_args(dest_t))
+        if dest_origin is Union
+        else mk_constructor(source_t, dest_origin)
+    )
+
+    if constructor is None:
+        raise Exception(
+            "Bug: No known conversions between source type ‘{0}’ and destination type ‘{1}’".format(
+                source_t, dest_t
+            )
+        )
+
+    return constructor(value)
+
 
 
 class ImmutableValidatedObject:
@@ -149,41 +252,59 @@ class ImmutableValidatedObject:
                 continue
             anno.update(x.__annotations__)
 
-        def _transform_value(value: Any, target_type: Type[T]) -> T:
+        def _transform_value(value: Any, dest_type: Type[T]) -> T:
             def is_immutable_validated_object_type(t: Type) -> bool:
                 return inspect.isclass(t) and issubclass(t, ImmutableValidatedObject)
 
-            t = typing.get_args(target_type)[0]  # type: ignore[attr-defined]
+            (t,) = typing.get_args(dest_type)  # type: ignore[attr-defined]
 
             # Untyped, pass through
             if t is Any:
                 return value
 
-            targs = tuple(set(typing.get_args(t)) - {type(None)})  # type: ignore[attr-defined]
-            torigin = typing.get_origin(t)  # type: ignore[attr-defined]
+            t_origin = typing.get_origin(t) or t  # type: ignore[attr-defined]
+            value_t = type(value)
+
+            if t_origin is Union:
+                constructors = tuple(
+                    c
+                    for c in (
+                        mk_constructor(value_t, typing.get_origin(union_t) or union_t)
+                        for union_t in typing.get_args(t_origin)
+                    )
+                    if c is not None
+                )
+                if len(constructors) > 1:
+                    raise Exception(
+                        "Bug: Multiple known conversions between source type ‘{0}’ and destination type ‘{1}’".format(
+                            value_t, t
+                        )
+                    )
+                else:
+                    constructor = constructors[0]
+            constructor = mk_constructor(type(value), torigin)
 
             # Support ImmutableValidatedObject, or any subclass (including subclasses that take type arguments).
             if is_immutable_validated_object_type(torigin):
                 if isinstance(value, Mapping):
-                    value = t(**value)
+                    value = torigin(**value)
                 else:
-                    value = t(value)
+                    value = torigin(value)
             elif len(targs) == 1 and is_immutable_validated_object_type(targs[0]):
 
-                # Support Optional[ImmutableValidatedObject]
+                # Support Optional[...] types
                 if torigin is Union:
                     if value is not None:
                         value = _transform_value(value, targs[0])
 
-                # Support Sequence[ImmutableValidatedObject]
+                # Support Sequence[...] types
                 elif (
                     isinstance(value, Sequence)
                     and inspect.isclass(torigin)
-                    and issubclass(tuple, torigin)
+                    and issubclass(torigin, Sequence)
                 ):
-                    value = tuple(_transform_value(v, targs[0]) for v in value)
+                    value = torigin(_transform_value(v, targs[0]) for v in value)
 
-            # TODO: Is run-time type checking still required now that the type is statically resolved via Type[T] -> T
             typeguard.check_type(key, value, t)
 
             return value
