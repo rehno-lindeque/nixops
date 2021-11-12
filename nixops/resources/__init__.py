@@ -71,12 +71,15 @@ class ResourceDefinition:
                 '"config" type annotation must be a ResourceOptions subclass'
             )
 
-        self.resource_eval = config
-        self.config = config_type(**config)
         self.name = name
+        self.resource_eval = config
+        self.config = self.prepare_config(config_type)
 
         if not re.match("^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\.]*$", self.name):  # noqa: W605
             raise Exception("invalid resource name ‘{0}’".format(self.name))
+
+    def prepare_config(self, config_type):
+        return config_type(**self.resource_eval)
 
     def show_type(self) -> str:
         """A short description of the type of resource this is"""
